@@ -1,0 +1,563 @@
+---
+title: "Predicting booking cancellations for hotels"
+author: "Group 2"
+geometry: margin=1cm
+fontsize: 11pt
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Introduction
+Our project aims to provide valuable insights on hotel cancellations using analytics. In order to systematically address the needs of the project, we have decided to adopt the "Cross-Industries Standard Process for Data Mining" (CRISP-DM), which will form the structure of our report. We found this useful since this process emphasizes the reiterative process of improving and updating each section based on new insights made as we progress and make new discoveries about the data and business problem.
+
+
+# Business Understanding
+## Understanding hotel cancellations
+Booking cancellation is a critical challenge faced by the hospitality industry because it has a direct impact on their revenue generating potential. When customers cancel their bookings, there are serious implications on the hotel because it not only affects their occupancy rates, but also any demand forecasting activities and budgeting that accounted for the canceled bookings. 
+
+Revenue management strategies such as dynamic pricing, overbooking and strict cancellation policies are employed in an effort to address booking cancellations and maximize occupancy rates. However, when done based on intuition only, these strategies might potentially backfire and result in negative consequences, such as loss sales, deteriorated business reputation and fall in customer loyalty. Therefore, it is of the industry's interest to more accurately predict booking cancellations and employ appropriate strategies based on data analysis. 
+
+## Goal of our analysis
+Using the four types of analytics (descriptive, diagnostic, prescriptive, predictive), we aim to provide insights on what affects booking cancellations and provide recommendations on how to improve cancellation rates. Following which, we will build a model to predict canceled bookings. The goal of our analysis is to answer 2 main questions:
+
+* Is booking cancellations related to factors like lead time and booking type?
+* Can we predict with reasonable accuracy if a booking will be canceled based on its attributes?
+
+
+# Data Understanding and Preparation 
+The dataset was extracted from Kaggle and can be found [here](https://www.kaggle.com/jessemostipak/hotel-booking-demand)
+
+The dataset is accompanied by documentation of the data, which can be found [here](https://www.sciencedirect.com/science/article/pii/S2352340918315191)
+
+
+```{r echo=F, results='hide'}
+packages = c('ggplot2', 'dplyr', 'reticulate', 'readr', 'tidyverse', 'ggcorrplot', 'rpart', 'rpart.plot', 'caret', 'e1071', 'ROCR', 'plyr', 'randomForest', 'caTools') 
+for (p in packages){
+  if(!require(p, character.only = T)){
+    install.packages(p)
+  }
+  library(p, character.only = T)
+}
+```
+
+```{r echo=F, results='hide'}
+data = read.csv("hotel_bookings.csv")
+```
+```{r echo=F, results='hide'}
+hotel_data = data.frame(data)
+str(hotel_data)
+```
+```{r echo=F, results='hide'}
+hotel_data[sapply(hotel_data, is.character)] = lapply(hotel_data[sapply(hotel_data, is.character)], as.factor)
+str(hotel_data)
+#summary(hotel_data)
+```
+
+
+### Missing data
+We checked the dataset for empty columns and found that only the children column has 4 empty cells "N.A" cells.
+```{r echo=F, results='hide'}
+hotel_data %>%
+  select(everything()) %>%  # replace to your needs
+  summarise_all(funs(sum(is.na(.))))
+```
+
+To address this, we replaced the missing values in the "Children" column from the corresponding Babies column.
+```{r echo=F, results='hide'}
+n = length(hotel_data$children)
+for (i in 1:n) {
+  if (is.na(hotel_data$children[i]))
+    hotel_data$children[i] = hotel_data$babies[i]
+}
+#summary(hotel_data)
+```
+
+
+### Correlation table 
+We plot all the numerical variables on a correlation table and noticed no significant multicollinearity issues between the numerical variables.
+```{r}
+df_numeric_data <- dplyr::select_if(hotel_data, is.numeric)
+r = cor(df_numeric_data)
+ggcorrplot(r, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE)
+```
+
+
+### Number of booking cancellations in City vs. Resort Hotel
+```{r}
+table(hotel_data$hotel)
+table(hotel_data$is_canceled, hotel_data$hotel)
+```
+From the table above, we know that majority of the data comes from the city hotel (66% of data), with about twice the amount of data as compared to the resort hotel (33%). Knowing this, we might consider performing a separate analysis for city hotel and resort hotel or our analysis might be skewed towards the city hotel.
+
+
+```{r echo=F, results='hide'}
+ggplot(data = hotel_data,
+       aes(
+         x = hotel,
+         y = prop.table(stat(count)),
+         fill = factor(is_canceled),
+         label = scales::percent(prop.table(stat(count)))
+         )) +
+        geom_bar(position = position_dodge()) + 
+        geom_text(
+          stat = "count",
+          position = position_dodge(.9),
+          vjust = -0.5,
+          size = 2.5
+        ) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Proportion of Bookings by Hotel Type",
+       x = "Hotel Type",
+       y = "% of Total Bookings") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Booking Status",
+    breaks = c("0", "1"),
+    labels = c("Not Cancelled", "Cancelled")
+  )
+```
+From this plot we see that we have more data points for cancellations in the City Hotel as compared to the Resort hotel as well. Again, it suggests that performing a separate analysis for both hotels might be appropriate. 
+
+
+## Additional notes on data
+We noted from the documentation of some key notes of caution about the data:
+
+1. Some variables are subject to change
+It is common for customers to change their booking attributes (e.g number of persons, staying duration) either at the time of their check-in or during the stay.
+
+2. Some of the variables may not be fully accurate 
+It is common for hotels not to know the correct nationality of the customer until the moment of check-in. 
+These implies that it is normal to observe anomalies in the data, and the distribution of some variables between non-canceled and canceled bookings might differ since they are subject to change up till the day that customers check-in.  
+
+
+
+# Descriptive Analytics
+We dive deeper to identify trends, patterns or anomalies in booking cancellations. This section aims to highlight **three** key discoveries from our data exploration and their implications which guide the way we proceed with data analysis and building of the models.   
+
+
+## Trends in booking cancellations
+### Discovery 1: Potential correlation between lead time and cancellations 
+```{r}
+hotelLT = hotel_data %>%
+  select(lead_time, is_canceled)
+str(hotelLT)
+meancancelsLT = hotelLT %>%
+  group_by(lead_time) %>%
+  summarise_all(mean)
+view(meancancelsLT)
+```
+```{r}
+LTscatterplot = ggplot(meancancelsLT, aes (x = lead_time , y = is_canceled))
+LTscatterplot + geom_point() + xlim(0, 750) + ylim(0, 1) + geom_smooth(method=lm) 
+```
+Apart from the anomalies where lead time is more than 750 days, the scatter plot revealed that as lead time increases, there is a higher probability of bookings being canceled.  
+
+This suggests there might be a **potential correlation** between lead time and canceled bookings. We might be able to verify this when checking for significant variables with predictive models. 
+
+
+### Discovery 2: The "Groups" segment is the segment with the highest % of cancellations (more than 50%)
+```{r}
+hotelMS = hotel_data %>%
+  select(market_segment, is_canceled)
+#str(hotelMS)
+meancancelsMS = hotelMS %>%
+  group_by(market_segment) %>%
+  summarise_all(mean)
+#view (meancancelsMS)
+counts <- table(hotelMS$is_canceled, hotelMS$market_segment)
+barplot(counts, main="Number of Cancellations by Market Segment",
+  xlab="market_segment", col=c("blue", "red"),
+  legend = rownames(counts), beside=TRUE) 
+```
+
+
+## Other insightful discoveries to contextualise data
+
+### Seasonality of cancellations
+```{r echo=F, results='hide'}
+hotel_data$arrival_date_month = factor(data$arrival_date_month, levels = month.name)
+
+city_data = subset(hotel_data, hotel == "City Hotel")
+resort_data = subset(hotel_data, hotel == "Resort Hotel")
+
+city_table = table(city_data$is_canceled,city_data$arrival_date_month)
+city_table_canceled = city_table[-1,]
+
+resort_table = table(resort_data$is_canceled,resort_data$arrival_date_month)
+resort_table_canceled = resort_table[-1,]
+
+city_canceled_data = subset(city_data, is_canceled == 1)
+resort_canceled_data = subset(resort_data, is_canceled == 1)
+```
+```{r echo=F, results='hide'}
+city_bar_cancel = ggplot(data=city_canceled_data,aes(arrival_date_month)) +
+geom_bar() +
+ggtitle("Cancellation per month for City Hotel")+
+geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+
+city_bar_cancel
+
+resort_bar_cancel = ggplot(data=resort_canceled_data,aes(arrival_date_month)) +
+geom_bar()+
+ggtitle("Cancellation per month for Resort Hotel")+
+geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+
+resort_bar_cancel
+```
+We know that for **City Hotel**, customers tend to cancel more from the period of **April to October**. 
+For **Resort Hotel**, **July and August* seem to have the most significant number of cancellations. 
+
+In light of this, we know that there might be some form of **seasonality** when it comes to booking cancellations because of the seasonality of hotel bookings, where customers tend to book holidays during the holiday seasons. 
+
+
+### Hotel room pricing variation by market segment
+```{r echo=F, results='hide'}
+ggplot(hotel_data, aes(market_segment, adr, fill=factor(hotel) )) + geom_boxplot(outlier.shape = NA) + coord_cartesian(ylim=c(0, 400))
+```
+Average daily rate is defined by the average revenue generated from a single night's stay based on the data documentation. We can compare the average ADR of each market segment to see which segments have the most price variation. 
+
+There is an anomaly from offline TA/TO where the ADR is >4000 for city hotels. We know this could potentially be a one-off high price that was charged, or perhaps an error in data entry. Because prices are clustered mostly around the $400 range, we used that as an upper bound.
+
+Based on the vertical box plot, it can be inferred that the **Direct** and **Online TA** segments have the highest price variation. A possible explanation is that dynamic pricing is more common in these segments. 
+
+On the other hand, we know that **Aviation** might be the least flexible in negotiating prices because of its low price variation. A possible explanation for this is that this segment usually has fixed arrangements with the hotels to ensure predictable prices.   
+
+ 
+
+
+#Predictive Analytics
+We found CART and Random Forest most relevant for building predictive models and produces the best results for predicting booking cancellations.  
+
+## Data Preparation for models
+We need to process and remove some of the variables for our prediction model. 
+
+Firstly, as mentioned in the section above, we decided to experiment with building a predictive model based on **City Hotel** data only, since there might be significant variation in Resort Hotel. Secondly, variables with more than 53 levels (country, company and agent) are removed due to the restrictions of R, also the models take too long to run when these variables are included. Thirdly, we removed variables (reservation_status and reservation_status_date). They cannot be used for prediction because they are directly related to booking cancellations. Including these variables will result in an AUC = 1.0, and the model won't be useful.
+
+```{r}
+hotel_model =  data %>% filter(hotel == 'City Hotel')
+hotel_model$children[is.na(hotel_model$children)] = 0
+hotel_model = subset(hotel_model, select=-c(country, company, agent, reservation_status_date, reservation_status, hotel))
+str(hotel_model)
+```
+
+```{r}
+hotel_model[3:6] = lapply(hotel_model[3:6], as.factor)
+hotel_model[12:15] = lapply(hotel_model[12:15], as.factor)
+hotel_model[18:19] = lapply(hotel_model[19:20], as.factor)
+hotel_model$customer_type = as.factor(hotel_model$customer_type)
+hotel_model$deposit_type = as.factor(hotel_model$deposit_type)
+hotel_clean = hotel_model
+```
+```{r}
+hotel_clean$is_canceled = as.factor(hotel_clean$is_canceled)
+hotel_clean$is_canceled = revalue(hotel_clean$is_canceled, c("0"="No", "1"="Yes"))
+hotel_clean$is_repeated_guest = revalue(hotel_clean$is_repeated_guest, c("0"="No", "1"="Yes"))
+str(hotel_clean)
+```
+
+
+We split this new data set into a training set and a test set, so we can have a test set to check the AUC of the model and evaluate its performance.
+```{r}
+set.seed(144)
+split = sample.split(hotel_clean$is_canceled, SplitRatio = 0.7)
+hotel_train = subset(hotel_clean, split == TRUE)
+hotel_test = subset(hotel_clean, split == FALSE)
+```
+
+
+## Model 1: CART Model
+
+Start with finding optimal cp using cross validation where k=5. 5 Seems to be an appropriate value since our dataset is around 100K rows, and a 1:5 ratio is around 80% to 20% training-test split. 
+```{r}
+fitControl = trainControl(method="CV", number=5, summaryFunction=twoClassSummary, classProbs = TRUE)
+cpGrid = expand.grid(.cp = ((1:10)*0.00001))
+```
+```{r}
+set.seed(144)
+cvtrain = train(is_canceled ~ ., data=hotel_train, method="rpart", trControl=fitControl, tuneGrid=cpGrid, metric="ROC")
+```
+```{r}
+cvtrain
+```
+
+We assigned the optimal cp value of 3e^-05 to train the classification tree.
+```{r}
+TrainTree = rpart(is_canceled ~ ., data=hotel_train, control=rpart.control(cp = 0.00003))
+prp(TrainTree)
+```
+
+Testing the hotel_train with test set
+```{r}
+predicttrain = predict(TrainTree, newdata=hotel_test, type = "class")
+confsub = table(hotel_test$is_canceled, predicttrain)
+confsub
+```
+
+Predicting Probability outcomes of CART Model
+```{r}
+predicttrain = predict(TrainTree, newdata = hotel_test, type = "prob")
+dim(predicttrain)
+```
+
+ROC of trainsub CART model
+```{r}
+predtrain = prediction(predicttrain[,2], hotel_test$is_canceled)
+perftrain = performance(predtrain, "tpr", "fpr")
+plot(perftrain)
+```
+
+AUC of trainsub CART model ()
+```{r}
+auctrain = performance(predtrain, "auc")
+auctrain@y.values[[1]]
+```
+
+
+##Model 2: Random Forest
+We built a Random Forest with our training data with all variables. We experimented with tuning the parameters ntree, nodesize and mtry, and derived these values to return the optimal results. 
+```{r}
+set.seed(144)
+HotelForest = randomForest(is_canceled ~ ., data=hotel_train, ntree=50, nodesize=1, mtry=8)
+```
+
+Predicting HotelForest with hotel_test to check ROC and AUC
+```{r}
+predictforest = predict(HotelForest, newdata = hotel_test, type = "prob")
+dim(predictforest)
+```
+
+```{r}
+predhotelforest = prediction(predictforest[,2], hotel_test$is_canceled)
+perftrain = performance(predhotelforest, "tpr", "fpr")
+plot(perftrain)
+```
+AUC of HotelForest model 
+```{r}
+auctraintree = performance(predhotelforest, "auc")
+auctraintree@y.values[[1]]
+```
+Our Random Forest model returned an AUC of **92.5%**, based on just City hotel data alone.
+
+
+### Discussion of Model Results
+From the CART diagram, we can infer that there are some variables that are more important than others, such as deposit type, previous cancellations and reserved room. This is inferred based on the CART tree, which returns a decision tree with the aforementioned variables seen in the top 2 levels.    
+
+Our random forest model returns a relatively high AUC of **92.5%**, so we know our model can predict city hotel cancellations relatively well. 
+
+Our initial hypothesis to only include City data in analysis because resort data might behave differently and skew results was disproved. We ran the same models to include both City and Resort data, which returned similar AUC of ~92%. Therefore, we could potentially use all rows of data to build a complete model.
+
+We will further discuss the implications of the model's results in the conclusion section later in the report. 
+
+
+#Diagnostic Analytics
+
+Based on the prior data analysis performed, we narrowed down what might be the top 3 factors that lead to cancellations based on data for City hotels. These factors are lead_time (from descriptive analysis), market_segment (descriptive analysis) and deposit type (CART). These are also the factors that the hotel might want to pay more attention to when dealing with cancellations in the future. Before making any recommendations for these factors, we analyzed these factors further to test if there is causality between these 3 variables and cancellation rates.
+
+##Lead Time
+
+As lead time is a continuous variable, we wont be able to do a controlled experiment for each lead time. As such, we will create a new column lead_bin - a binary variable where we set the lead time to be less than a certain value. This way, we can see if with all control variables constant, does lead time have an effect on the cancellation rate. Based on the analysis above, we found that at lead time = 100 is when the rate of cancellations start to decrease. As a starting point, we will use lead_time > 100 as the binary constraint.
+
+```{r}
+hotel_clean1 = hotel_model %>% mutate(lead_bin = ifelse(lead_time > 100,1,0))
+str(hotel_clean1)
+```
+```{r}
+table(hotel_clean1$lead_bin)
+```
+```{r}
+tapply(hotel_clean1$is_canceled, hotel_clean1$lead_bin, mean)
+```
+
+We can see from this that the mean cancellation rate (probability of cancellation) is 0.315 for rooms booked earlier than 100 days from its arrival date, and 0.564 for rooms with more than 100 days in lead time to arrival date.
+
+```{r}
+library(MatchIt)
+```
+
+Matching based on lead time > 100 for selected variables. We selected the control variables based on what we feel will be possibly affected by the lead time. Due to the interest of space, we have left out the explanations for each variable.
+```{r}
+matching_lead = matchit(lead_bin ~ arrival_date_month + arrival_date_week_number + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights + adr + market_segment + distribution_channel + previous_cancellations, data = hotel_clean1, method = "nearest", ratio = 1)
+matching_lead
+```
+We then see if the new data set is matched properly.
+```{r}
+plot(matching_lead, type = "hist")
+```
+
+The matching of data is not ideal, but given the large number of data points it is hard to match very accurately so we continued with our analysis with the given match results
+
+
+We will now analyze to see if there is a significant difference in the cancellation rates once the data has been matched, with having only the lead time as the differing factor.
+```{r}
+hotelmatched1 = match.data(matching_lead)
+str(hotelmatched1)
+```
+
+```{r}
+table(hotelmatched1$lead_bin)
+```
+
+```{r}
+tapply(hotelmatched1$is_canceled, hotelmatched1$lead_bin, mean)
+```
+We can see from this that the mean cancellation rate (probability of cancellation) for the matched data is 0.345 for smaller lead times and 0.564 for larger lead times. 
+
+From this we can see that the rate of cancellation is caused by a larger lead time, as the rate of cancellation did not change much with all else being constant. To further confirm our hypothesis, we will do a logistic regression to see if the variable lead_bin is an significant variable by analyzing its p-value.
+
+```{r}
+MatchLog = glm(is_canceled ~ arrival_date_month + arrival_date_week_number + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights + adr + market_segment + distribution_channel + previous_cancellations+ lead_bin, data = hotelmatched1, family = binomial)
+summary(MatchLog)
+```
+
+As the variable lead_bin has a 3* significance, we should conclude that lead time is a causal factor for hotel booking cancellations.
+
+However, this analysis is only to compare between rooms booked within 100 days in advance against rooms booked more than 100 days in advance. As we increased the days from 100 to 200 and 300, we started to see that the number of cancellations were significantly different from the matched and unmatched data. As such, since it is hard for us to conclude certainly if lead time is indeed a causal factor for the cancellations, we chose to make the assumption that **lead time is not a strong causal factor for cancellations.**
+
+## Market Segment
+The next variable that we would like to check for causation would be market segment. From our earlier analysis, we found that the market segment 'Groups' had the highest cancellation rate of about 68%. We then did the same steps above by creating a new binary variable for if market_segment == 'Group' and repeated the process. 
+
+```{r}
+hotel_clean2 = hotel_model %>% mutate(groups = ifelse(market_segment == 'Groups',1,0))
+str(hotel_clean2)
+```
+```{r}
+tapply(hotel_clean2$is_canceled, hotel_clean2$groups, mean)
+```
+We can see from this that the mean cancellation rate (probability of cancellation) is 0.359 for rooms not booked in groups and 0.564 for rooms booked in groups.
+
+
+```{r}
+matching_groups = matchit(groups ~ lead_time + arrival_date_year + arrival_date_month + arrival_date_week_number + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights + adr, data = hotel_clean2, method = "nearest", ratio = 1)
+summary(matching_groups)
+```
+
+Analysis of matched groups values
+```{r}
+plot(matching_groups, type = "hist")
+```
+
+From the graph, we can see that the matching of values for groups are much better matched than lead time.
+
+```{r}
+hotelmatched2 = match.data(matching_groups)
+```
+```{r}
+tapply(hotelmatched2$is_canceled, hotelmatched2$groups, mean)
+```
+
+We can see from this that the mean cancellation rate (probability of cancellation) is 0.409 for rooms not booked in groups and 0.564 for rooms booked in groups.
+
+Since the difference is not significant as well, we can say that bookings by groups has a causal relationship with cancellations. We will do a logistic regression again to confirm the hypothesis.
+
+```{r}
+MatchLog1 = glm(is_canceled ~ lead_time + arrival_date_year + arrival_date_month + arrival_date_week_number + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights + adr + groups, data = hotel_clean2, family = binomial)
+summary(MatchLog1)
+```
+
+As the variable lead_bin has a 3* significance, we can indeed conclude that bookings made by groups is a causal factor for hotel booking cancellations.
+
+
+##Deposit Type
+The final variable that we would like to check for causation would be deposit type. From the CART model, we found that the deposit type with 'Non Refund' had the highest cancellation rate of about 99%. We then did the same steps above by creating a new binary variable for if deposit_type == 'Non Refund' and repeated the process. Non Refund refers to bookings that do not have a refund for cancellations.
+
+```{r}
+hotel_clean3 = hotel_model %>% mutate(refund = ifelse(deposit_type == 'Non Refund',1,0))
+```
+```{r}
+table(hotel_clean3$refund)
+```
+
+```{r}
+tapply(hotel_clean3$is_canceled, hotel_clean3$refund, mean)
+```
+We can see from this that the mean cancellation rate (probability of cancellation) is 0.998 for rooms with no refund and 0.304 for rooms with no deposit and refundable rooms.
+
+```{r}
+matching_refund = matchit(refund ~ lead_time + arrival_date_year + arrival_date_month + arrival_date_week_number + arrival_date_day_of_month + stays_in_weekend_nights + stays_in_week_nights + adr + previous_cancellations + previous_bookings_not_canceled , data = hotel_clean3, method = "nearest", ratio = 1)
+summary(matching_refund)
+```
+
+Analysis of matched Non Refund values
+```{r}
+plot(matching_refund, type = "hist")
+```
+
+```{r}
+hotelmatched3 = match.data(matching_refund)
+```
+
+Cancellations post matched analysis
+```{r}
+tapply(hotelmatched3$is_canceled, hotelmatched3$refund, mean)
+```
+
+After the data is matched we can see from this that the mean cancellation rate is still similar at 0.375 for rooms with no depoist and refundable and the same 0.998 for rooms with no refund. Since this is counter-intuitive, we would like to further check the significance of this through a logistic regression model.
+
+```{r}
+MatchLog3 = glm(is_canceled ~ . -deposit_type, data = hotel_clean4, family = binomial)
+summary(MatchLog3)
+```
+From this analysis, we can conclude that rooms with no refund are a significant factor for the cancellations of rooms.
+
+
+#Prescriptive Analytics
+1.	Algorithm that adjusts the hotel's level of overbooking based on seasonality
+
+In order to maximize our overbooking strategy, prescriptive analytics can help by automatically adjusting how much to overbook the hotel based on factors that change throughout the year. This ensures the hotel implements the optimal level to overbook, and minimize the possibility of the negative consequences mentioned in the earlier section. One example is as such: When the algorithm identifies that it is currently the season for holiday bookings, it can automatically adjust to increase the level of overbooking, since customers are more likely to cancel during this season. This insight is based on our descriptive analysis in the earlier section. 
+
+
+2. Algorithm which tailors pricing and cancellation policies based on customer profile
+
+Prescriptive analytics can be used to maximize a hotel's profit generating potential by charging the highest price possible to customers based on the type of customer. The hotel can also implement tailored cancellation policies to customers based on their history of cancellations. Our analysis shows that there is a pattern in certain segments which are more profitable, as well as reveals that customers who have had a history of cancellations are more likely to cancel.  
+
+
+# Discussion on Findings
+In our introduction, it was stated that the goal of our analysis is to answer two main questions:
+
+* Is booking cancellations related to factors like lead time and customer type?
+* Can we predict with reasonable accuracy if a booking will be canceled based on its attributes?
+
+Based our data analysis, we distilled the most critical insights in the following section. 
+
+
+###Lead Time
+Based on our analysis, we learned that lead time is one of the most significant factors that affects cancellations. When lead time increases, customers are more likely to cancel their bookings. We first observed this with descriptive analysis in the scatter plot, then verified from our CART tree that bookings with higher lead times are predicted to be canceled, and we can see from our causation analysis that lead time is indeed a causal factor as well.
+
+
+###Deposit Type
+One factor that we found from the CART model that might prove to be significant is deposit_type. We further confirmed it from the diagnostic analysis that it is a significant variable. This variable was very counter intuitive to us as it showed that rooms with No Refund had a 99% cancellation rate, as compared to rooms with No Deposit. The number of Non Refund rooms were not insignificant with 15% of the bookings being Non Refund. We can therefore conclude from this analysis that just because a customer will not face a monetary penalty from his cancellation decision, he will not cancel his booking. Therefore a key insight here would be to learn that a Non Refund room will not prevent cancellations.
+
+
+###Other Important Factors
+From the CART model and exploratory analysis, we can see that other important factors for the hotel to take note would be: previous cancellations, previous bookings and market segment. Customers who have a history of many bookings and fewer cancellations have a higher chance of keeping their booking than cancelling it. This could be a key insight for the hotel to reward such customers with incentives such as loyalty programmes, credit accounts and memberships to retain these loyal customers which can increase revenue and reduce cancellations. Market segment "Group" which refers to group bookings such as in tour groups, also have the highest cancellation rate, and as such could prove as a warning sign that they can plan for when bookings come from this segment.
+
+
+#Can we predict with reasonable accuracy if a booking will be canceled based on its attributes?
+From our models, we found that with the given dataset the model can correctly predict the cancellation to a very high standard as it had AUC of above 0.88 for both models. This proves that on top of the early warning signs that hotel staff can see from the variables we picked out from our analysis, they can also use the models provided by us to predict if a hotel booking would be cancelled based on all the data entered by the customern to better plan their hotel allocation and revenue management.
+
+
+# Limitations and Further Studies
+
+##Dataset
+From our analysis, we can tell that most of the factors that lead to predicting the outcome of the bookings are based on customer demographic and behaviour. Whether they are booking in groups or have a history of booking hotels/cancelling etc. However, most of the data in this dataset are related to the hotel and the booking and do not provide as much importance to the prediction and our analysis. We are also unable to add additional demographic data as we do not know who these individuals are. A learning point for the hotel could be to work with other hotels and websites to pool data about the customers' hotel booking habits and their demographics to better understand if the customer is likely to cancel the booking, rather than basing it off the booking details of the room. From the booking details, the only variable that is significant would be the lead time and this alone will not be sufficient for prediciton.
+
+
+Can we predict with reasonable accuracy if a booking will be canceled based on its attributes?
+
+# Limitations and future studies
+Tested only on city and resort data 
+Behavior limited to hotel in portugal, might differ elsewhere
+Is portugal a hot tourist destination? might want to dig deeper into demographics of customer
+but data not available 
+
+future studies 
+other countries
+
+
+
+
+

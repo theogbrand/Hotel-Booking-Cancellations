@@ -1,0 +1,276 @@
+---
+title: "Predicting booking cancellations for hotels"
+author: "Group 2"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Introduction
+Our project aims to provide valuable insights on hotel cancellations using analytics. In order to systematically address the needs of the project, we have decided to adopt the "Cross-Industries Standard Process for Data Mining" (CRISP-DM), which will form the structure of our report. 
+
+# Business Understanding
+## Understanding hotel cancellations
+Booking cancellation is a critical challenge faced by the hospitality industry because it has a direct impact on their revenue generating potential. When customers cancel their bookings, there are serious implications on the hotel because it not only affects their occupancy rates, but also any demand forecasting activities and budgeting that accounted for the canceled bookings. 
+
+Revenue management strategies such as dynamic pricing, overbooking and strict cancellation policies are employed in an effort to address booking cancellations and maximize occupancy rates. However, when done based on intuition only, these strategies might potentially backfire and result in negative consequences, such as loss sales, deteriorated business reputation and fall in customer loyalty. Therefore, it is of the industry's interest to prevent this from happening as much as possible. 
+
+## Goal of our analysis
+Using various types of analytics, we aim to provide insights on what affects booking cancellations and provide recommendations on how to improve cancellation rates. Following which, we will build a model to predict canceled bookings. The goal of our analysis is to answer 2 main questions:
+
+* Is booking cancellations related to factors like lead time and booking type?
+* Can we predict if a booking will be canceled based on its attributes, with reasonable accuracy?
+
+<KIV>
+assist in better demand forecasting, establish better overbooking tactics and improve cancellation policies. 
+To improve the results, the model should be supplemented with other machine learning models and more rigorous testing to provide a more holistic solution to the booking cancellation problem.
+In the first section, we use exploratory data analysis to learn more about the dataset we're dealing with and understand what factors affect booking cancellation rates.
+<KIV>
+
+<notes>
+Ideas for transforming variables: families? 
+
+Important insights from EDA
+Locations 
+Nights spent 
+exclude reservation status** some weird cancellation rs here 
+<notes>
+
+# Data Understanding and Data Preparation 
+The dataset was extracted from Kaggle, and can be found [here](https://www.kaggle.com/jessemostipak/hotel-booking-demand)
+
+The dataset is accompanied by documentation of the data, which can be found [here](https://www.sciencedirect.com/science/article/pii/S2352340918315191)
+
+```{r echo=F, results='hide'}
+packages = c('ggplot2', 'dplyr', 'reticulate', 'readr', 'tidyverse', 'ggcorrplot') 
+for (p in packages){
+  if(!require(p, character.only = T)){
+    install.packages(p)
+  }
+  library(p, character.only = T)
+}
+```
+
+```{r echo=F, results='hide'}
+data = read.csv("hotel_bookings.csv")
+```
+
+The structure of the data can be seen below. 
+```{r echo=F, results='hide'}
+hotel_data = data.frame(data)
+str(hotel_data)
+```
+
+Converting all character variables to factor variables
+```{r echo=F, results='hide'}
+hotel_data[sapply(hotel_data, is.character)] = lapply(hotel_data[sapply(hotel_data, is.character)], as.factor)
+str(hotel_data)
+summary(hotel_data)
+```
+
+We checked the dataset for empty columns and found that only the children column has 4 empty cells.
+```{r echo=F, results='hide'}
+hotel_data %>%
+  select(everything()) %>%  # replace to your needs
+  summarise_all(funs(sum(is.na(.))))
+```
+
+To address this, we replaced the missing values in the "Children" column from the corresponding Babies column.
+```{r echo=F, results='hide'}
+n = length(hotel_data$children)
+for (i in 1:n) {
+  if (is.na(hotel_data$children[i]))
+    hotel_data$children[i] = hotel_data$babies[i]
+}
+```
+
+We noted from the documentation of some key notes of caution about the data:
+
+1. Some variables are subject to change
+It is common for customers to change their booking attributes (e.g number of persons, staying duration) either at the time of their check-in or during the stay.
+
+2. Some of the variables may not be fully accurate 
+It is common for hotels not to know the correct nationality of the customer until the moment of check-in. This will affect the distribution of some variables between non-canceled and canceled bookings. 
+
+These implies to us that it is normal to observe anomalies in the dataset, and also affect the variable selection when building our predictive models.
+
+
+<maybe add in checks for outliers>
+<any other checks to do?> 
+<variable transformation> -> create 1-2 (families?)
+
+
+# Exploratory Data Analysis
+This section aims to highlight key discoveries from our data exploration and their implications which guide the way we proceed with data analysis and building of the models.  
+
+
+## Booking Cancellations in City vs. Resort Hotel
+```{r echo=F, results='hide'}
+table(hotel_data$hotel)
+table(hotel_data$is_canceled, hotel_data$hotel)
+```
+Majority of the dataset comes from the city hotel, with about twice the amount of data as compared to the resort hotel. Knowing this, we might consider performing a separate analysis for city hotels and resort hotel, or our analysis might be skewed towards the city hotel.
+
+```{r echo=F, results='hide'}
+ggplot(data = hotel_data,
+       aes(
+         x = hotel,
+         y = prop.table(stat(count)),
+         fill = factor(is_canceled),
+         label = scales::percent(prop.table(stat(count)))
+         )) +
+        geom_bar(position = position_dodge()) + 
+        geom_text(
+          stat = "count",
+          position = position_dodge(.9),
+          vjust = -0.5,
+          size = 2.5
+        ) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Proportion of Bookings by Hotel Type",
+       x = "Hotel Type",
+       y = "% of Total Bookings") +
+  theme_classic() +
+  scale_fill_discrete(
+    name = "Booking Status",
+    breaks = c("0", "1"),
+    labels = c("Not Cancelled", "Cancelled")
+  )
+```
+From this plot we see that we have more data points for cancellations in the City Hotel as compared to the Resort hotel as well. Again, it suggests that performing a separate analysis for both hotels might be more helpful.
+
+## Trends in booking cancellations
+Next we dive deeper to identify trends, patterns or anomalies in booking cancellations.
+
+### Correlation table 
+We plot all the numerical variables on a correlation table and noticed no significant multicollinearity issues between the numerical variables.
+```{r}
+df_numeric_data <- dplyr::select_if(hotel_data, is.numeric)
+r = cor(df_numeric_data)
+ggcorrplot(r, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE)
+```
+
+### Potential correlation between lead time and cancellations 
+```{r}
+hotelLT = hotel_data %>%
+  select(lead_time, is_canceled)
+#str(hotelLT)
+meancancelsLT = hotelLT %>%
+  group_by(lead_time) %>%
+  summarise_all(mean)
+#view(meancancelsLT)
+```
+```{r}
+LTscatterplot = ggplot(meancancelsLT, aes (x = lead_time , y = is_canceled))
+LTscatterplot + geom_point() + xlim(0, 750) + ylim(0, 1) + geom_smooth(method=lm) 
+```
+Apart from the anomalies where lead time is more than 750 days, the scatter plot revealed that as lead time increases, there is a higher probability of bookings being canceled.  
+
+This suggests there might be a **potential strong correlation** between lead time and canceled bookings. 
+
+
+### The "Groups" market segment has the highest number of cancellations 
+```{r}
+hotelMS = hotel_data %>%
+  select(market_segment, is_canceled)
+#str(hotelMS)
+meancancelsMS = hotelMS %>%
+  group_by(market_segment) %>%
+  summarise_all(mean)
+#view (meancancelsMS)
+counts <- table(hotelMS$is_canceled, hotelMS$market_segment)
+barplot(counts, main="Number of Cancellations by Market Segment",
+  xlab="market_segment", col=c("blue", "red"),
+  legend = rownames(counts), beside=TRUE) 
+```
+
+### Online TA is the distribution channel with the highest number of cancellations
+```{r}
+hotelDC = hotel_data %>%
+  select(distribution_channel, is_canceled)
+str(hotelDC)
+meancancelsDC = hotelDC %>%
+group_by(distribution_channel) %>%
+summarise_all(mean)
+view (meancancelsDC)
+```
+
+```{r}
+countsDC <- table(hotelDC$is_canceled, hotelDC$distribution_channel)
+barplot(counts, main="Number of Cancellations by Distribution Channel",
+xlab="distribution_channel", col=c("darkgreen","red"),
+legend = rownames(counts), beside=TRUE)
+```
+
+### Seasonality of cancellations
+```{r echo=F, results='hide'}
+hotel_data$arrival_date_month = factor(data$arrival_date_month, levels = month.name)
+
+city_data = subset(data, hotel == "City Hotel")
+resort_data = subset(data, hotel == "Resort Hotel")
+
+city_table = table(city_data$is_canceled,city_data$arrival_date_month)
+city_table_canceled = city_table[-1,]
+
+resort_table = table(resort_data$is_canceled,resort_data$arrival_date_month)
+resort_table_canceled = resort_table[-1,]
+
+city_canceled_data = subset(city_data, is_canceled == 1)
+resort_canceled_data = subset(resort_data, is_canceled == 1)
+```
+
+```{r echo=F, results='hide'}
+city_bar_cancel = ggplot(data=city_canceled_data,aes(arrival_date_month)) +
+geom_bar() +
+ggtitle("Cancellation per month for City Hotel")+
+geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+
+city_bar_cancel
+
+resort_bar_cancel = ggplot(data=resort_canceled_data,aes(arrival_date_month)) +
+geom_bar()+
+ggtitle("Cancellation per month for Resort Hotel")+
+geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+
+resort_bar_cancel
+```
+We know that for City Hotel, customers tend to cancel more from the period of April to October. 
+For Resort Hotel, July and August seem to have the most significant number of cancellations. 
+
+In light of this, we know that there might be some form of **seasonality** when it comes to booking cancellations, which arises from the seasonality of hotel bookings, where customers tend to book holidays during the holiday seasons. 
+
+
+### Lead time and cancellations
+```{r}
+scatterplot = ggplot(hotel_data, aes (x = adr , y = lead_time))
+scatterplot + geom_point() + xlim(0, 750) + ylim(0, 700)
+```
+
+```{r}
+scatterplot = ggplot(meancancelsLT, aes (x = lead_time , y = is_canceled))
+scatterplot + geom_point() + xlim(0, 750) + ylim(0, 1)
+```
+
+## Customer related trends
+### How does revenue differ by market segment?
+```{r echo=F, results='hide'}
+ggplot(hotel_data, aes(market_segment, adr, fill=factor(hotel) )) + geom_boxplot(outlier.shape = NA) + coord_cartesian(ylim=c(0, 400))
+```
+
+Average daily rate is defined by the average revenue generated from a single night's stay. We can compare the average ADR of each market segment to see which segments are most profitable. 
+
+We observe that the **Direct** and **Online TA** segments have the highest ADR (highest point of the whisker), and have the highest price variation (boxes). These 2 segments could potentially be the most profitable segments.
+
+On the other hand, we know that **Aviation** has the lowest price variation and might be the least profitable segment. A possible explanation for this is this segment usually has fixed arrangements with the hotels to ensure predictable prices. 
+
+We observed an anomaly from offline TA/TO where the ADR is >4000 for city hotels. We know this could potentially be a one-off high price that was charged, or perhaps an error in data entry. Because prices are clustered mostly around the $400 range, we used that as an upper bound. 
+
+
+
+
+
+
+

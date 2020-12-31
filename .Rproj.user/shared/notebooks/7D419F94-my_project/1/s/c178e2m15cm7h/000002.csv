@@ -1,0 +1,9 @@
+"0","packages = c('ggplot2') "
+"0","for (p in packages){"
+"0","  if(!require(p, character.only = T)){"
+"0","    install.packages(p)"
+"0","  }"
+"0","  library(p, character.only = T)"
+"0","}"
+"2","Loading required package: ggplot2
+"

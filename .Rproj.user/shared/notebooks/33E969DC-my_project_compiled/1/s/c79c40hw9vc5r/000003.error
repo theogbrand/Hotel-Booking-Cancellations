@@ -1,0 +1,1 @@
+{"frames":[],"message":"Error in hotel_model %>% mutate(lead_bin = ifelse(lead_time > 100, 1,  : \n  could not find function \"%>%\"\n"}
