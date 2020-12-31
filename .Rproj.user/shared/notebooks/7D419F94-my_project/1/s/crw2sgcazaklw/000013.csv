@@ -1,1 +1,0 @@
-"0","ggplot(bookings, aes(arrival_date_month, y=adr, group=1)) + geom_point() + geom_line()"

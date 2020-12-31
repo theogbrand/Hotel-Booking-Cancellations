@@ -1,4 +1,0 @@
-"0","hotel_clean1 = hotel_model %>% mutate(lead_bin = ifelse(lead_time > 100,1,0))"
-"2","Error in hotel_model %>% mutate(lead_bin = ifelse(lead_time > 100, 1,  : 
-  could not find function ""%>%""
-"

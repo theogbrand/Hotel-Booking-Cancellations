@@ -1,3 +1,0 @@
-"0","prop.table(table(hotel))"
-"2","Error in table(hotel) : object 'hotel' not found
-"
